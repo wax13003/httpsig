@@ -3,6 +3,8 @@ package httpsig
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -65,6 +67,8 @@ var (
 	privKey               *rsa.PrivateKey
 	macKey                []byte
 	tests                 []httpsigTest
+	testSpecESDSAPrivateKey *ecdsa.PrivateKey
+	testSpecESDSAPublicKey  *ecdsa.PublicKey
 	testSpecRSAPrivateKey *rsa.PrivateKey
 	testSpecRSAPublicKey  *rsa.PublicKey
 	testEd25519PrivateKey ed25519.PrivateKey
@@ -81,6 +85,10 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+
+	privESDSAKey, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	pubESDSAKey := &privESDSAKey.PublicKey
+
 	macKey = make([]byte, 128)
 	err = readFullFromCrypto(macKey)
 	if err != nil {
@@ -109,6 +117,18 @@ func init() {
 			pubKey:                     pubEd25519Key,
 			pubKeyId:                   "pubKeyId",
 			expectedAlgorithm:          ED25519,
+			expectedSignatureAlgorithm: "hs2019",
+		},
+		{
+			name:                       "ECDSA signature",
+			prefs:                      []Algorithm{ECDSA_SHA512},
+			digestAlg:                  DigestSha256,
+			headers:                    []string{"Date", "Digest"},
+			scheme:                     Signature,
+			privKey:                    privESDSAKey,
+			pubKey:                     pubESDSAKey,
+			pubKeyId:                   "pubKeyId",
+			expectedAlgorithm:          ECDSA_SHA512,
 			expectedSignatureAlgorithm: "hs2019",
 		},
 		{
@@ -257,6 +277,16 @@ func init() {
 	}
 
 	testSpecRSAPublicKey, err = loadPublicKey([]byte(testSpecPublicKeyPEM))
+	if err != nil {
+		panic(err)
+	}
+
+	testSpecESDSAPrivateKey, err = loadESDSAPrivateKey([]byte(testSpecECDSAPrivateKeyPEM))
+	if err != nil {
+		panic(err)
+	}
+
+	testSpecESDSAPublicKey, err = loadESDSAPublicKey([]byte(testSpecECDSAPublicKeyPEM))
 	if err != nil {
 		panic(err)
 	}
@@ -686,6 +716,61 @@ func TestSigningEd25519(t *testing.T) {
 	}
 }
 
+//func TestSigningECDSA(t *testing.T) {
+//	specTests := []struct {
+//		name              string
+//		headers           []string
+//		expectedSignature string
+//	}{
+//		{
+//			name:    "Default Test",
+//			headers: []string{},
+//			expectedSignature: `Authorization: Signature keyId="Test",algorithm="hs2019",headers="date",signature="MGQCMCd7WOA9PSwualgiAzbHqDVirTIn5D3R0aFS35S3W6CP7aA+q44Fmy+DiqiGYxt/OgIwf3jR9Jkk7yphGRYfUNaivYDo5wNPfaf7viaepskdmhTHt0Zt0n2OtuJLTLkik1Y1"`,
+//		},
+//		{
+//			name:              "Basic Test",
+//			headers:           []string{"(request-target)", "host", "date"},
+//			expectedSignature: `Authorization: Signature keyId="Test",algorithm="hs2019",headers="(request-target) host date",signature="MGYCMQD8/KnqgnNAFtCsf19js404taSUS0SuFA6a93HXdDJ/A2g8CLf1LKo8ODib/rOyGs0CMQC8Xi1+iQXKtw3FjQht9cQH061+jISxzJXv24qpPudJms7sdvJiqo1P464+79gsTds="`,
+//		},
+//		{
+//			name:              "All Headers Test",
+//			headers:           []string{"(request-target)", "host", "date", "content-type", "digest", "content-length"},
+//			expectedSignature: `Authorization: Signature keyId="Test",algorithm="hs2019",headers="(request-target) host date content-type digest content-length",signature="MGUCMCgPLqPP5g893IWfofmIajGFIXXgc22pnQpBA2r1x655E9A94ECmamRVOQyJo4LuVQIxAMFtQSgVg7g+2eswRVM4EexmiSeEmraNd8Cd5htMHLTpG8NOLwdlC10EmcR4rH7/EA=="`,
+//		},
+//	}
+//
+//	for _, test := range specTests {
+//		t.Run(test.name, func(t *testing.T) {
+//			test := test
+//			r, err := http.NewRequest("POST", "http://example.com/foo?param=value&pet=dog", bytes.NewBuffer([]byte(testSpecBody)))
+//			if err != nil {
+//				t.Fatalf("error creating request: %s", err)
+//			}
+//
+//			r.Header["Date"] = []string{testSpecDate}
+//			r.Header["Host"] = []string{r.URL.Host}
+//			r.Header["Content-Length"] = []string{strconv.Itoa(len(testSpecBody))}
+//			r.Header["Content-Type"] = []string{"application/json"}
+//			setDigest(r)
+//
+//			s, _, err := NewSigner([]Algorithm{ECDSA_SHA512}, DigestSha256, test.headers, Authorization, 0)
+//			if err != nil {
+//				t.Fatalf("error creating signer: %s", err)
+//			}
+//
+//			if err := s.SignRequest(testSpecESDSAPrivateKey, "Test", r, nil); err != nil {
+//				t.Fatalf("error signing request: %s", err)
+//			}
+//
+//			expectedAuth := test.expectedSignature
+//			gotAuth := fmt.Sprintf("Authorization: %s", r.Header["Authorization"][0])
+//			if gotAuth != expectedAuth {
+//				t.Errorf("Signature string mismatch\nGot: %s\nWant: %s", gotAuth, expectedAuth)
+//			}
+//		})
+//	}
+//}
+
 // Test_Verifying_HTTP_Messages_AppendixC implement tests from Appendix C
 // in the http signatures specification:
 // https://tools.ietf.org/html/draft-cavage-http-signatures-10#appendix-C
@@ -795,6 +880,59 @@ func TestVerifyingEd25519(t *testing.T) {
 	}
 }
 
+func TestVerifyingESDSA(t *testing.T) {
+	specTests := []struct {
+		name      string
+		headers   []string
+		signature string
+	}{
+		{
+			name:      "Default Test",
+			headers:   []string{},
+			signature: `Signature keyId="Test",algorithm="hs2019",headers="date",signature="MGQCMCd7WOA9PSwualgiAzbHqDVirTIn5D3R0aFS35S3W6CP7aA+q44Fmy+DiqiGYxt/OgIwf3jR9Jkk7yphGRYfUNaivYDo5wNPfaf7viaepskdmhTHt0Zt0n2OtuJLTLkik1Y1"`,
+		},
+		{
+			name:      "Basic Test",
+			headers:   []string{"(request-target)", "host", "date"},
+			signature: `Signature keyId="Test",algorithm="hs2019",headers="(request-target) host date",signature="MGYCMQD8/KnqgnNAFtCsf19js404taSUS0SuFA6a93HXdDJ/A2g8CLf1LKo8ODib/rOyGs0CMQC8Xi1+iQXKtw3FjQht9cQH061+jISxzJXv24qpPudJms7sdvJiqo1P464+79gsTds="`,
+		},
+		{
+			name:      "All Headers Test",
+			headers:   []string{"(request-target)", "host", "date", "content-type", "digest", "content-length"},
+			signature: `Signature keyId="Test",algorithm="hs2019",headers="(request-target) host date content-type digest content-length",signature="MGUCMCgPLqPP5g893IWfofmIajGFIXXgc22pnQpBA2r1x655E9A94ECmamRVOQyJo4LuVQIxAMFtQSgVg7g+2eswRVM4EexmiSeEmraNd8Cd5htMHLTpG8NOLwdlC10EmcR4rH7/EA=="`,
+		},
+	}
+
+	for _, test := range specTests {
+		t.Run(test.name, func(t *testing.T) {
+			test := test
+			r, err := http.NewRequest("POST", "http://example.com/foo?param=value&pet=dog", bytes.NewBuffer([]byte(testSpecBody)))
+			if err != nil {
+				t.Fatalf("error creating request: %s", err)
+			}
+
+			r.Header["Date"] = []string{testSpecDate}
+			r.Header["Host"] = []string{r.URL.Host}
+			r.Header["Content-Length"] = []string{strconv.Itoa(len(testSpecBody))}
+			r.Header["Content-Type"] = []string{"application/json"}
+			setDigest(r)
+			r.Header["Authorization"] = []string{test.signature}
+
+			v, err := NewVerifier(r)
+			if err != nil {
+				t.Fatalf("error creating verifier: %s", err)
+			}
+
+			if "Test" != v.KeyId() {
+				t.Errorf("KeyId mismatch\nGot: %s\nWant: Test", v.KeyId())
+			}
+			if err := v.Verify(testSpecESDSAPublicKey, ECDSA_SHA512); err != nil {
+				t.Errorf("Verification failure: %s", err)
+			}
+		})
+	}
+}
+
 func loadPrivateKey(keyData []byte) (*rsa.PrivateKey, error) {
 	pem, _ := pem.Decode(keyData)
 	if pem.Type != "RSA PRIVATE KEY" {
@@ -802,6 +940,27 @@ func loadPrivateKey(keyData []byte) (*rsa.PrivateKey, error) {
 	}
 
 	return x509.ParsePKCS1PrivateKey(pem.Bytes)
+}
+
+func loadESDSAPrivateKey(keyData []byte) (*ecdsa.PrivateKey, error) {
+	//pem, _ := pem.Decode(keyData)
+	//if pem.Type != "RSA PRIVATE KEY" {
+	//	return nil, fmt.Errorf("RSA private key is of the wrong type: %s", pem.Type)
+	//}
+
+
+	block, _ := pem.Decode(keyData)
+	x509Encoded := block.Bytes
+	privateKey, _ := x509.ParseECPrivateKey(x509Encoded)
+
+	//blockPub, _ := pem.Decode([]byte(pemEncodedPub))
+	//x509EncodedPub := blockPub.Bytes
+	//genericPublicKey, _ := x509.ParsePKIXPublicKey(x509EncodedPub)
+	//publicKey := genericPublicKey.(*ecdsa.PublicKey)
+
+	//return privateKey, publicKey
+
+	return privateKey, nil
 }
 
 // taken from https://blainsmith.com/articles/signing-jwts-with-gos-crypto-ed25519/
@@ -817,6 +976,7 @@ func loadEd25519PrivateKey(keyData []byte) (ed25519.PrivateKey, error) {
 	return ed25519.NewKeyFromSeed(asn1PrivKey.PrivateKey[2:]), nil
 }
 
+
 func loadPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 	pem, _ := pem.Decode(keyData)
 	if pem.Type != "PUBLIC KEY" {
@@ -829,6 +989,15 @@ func loadPublicKey(keyData []byte) (*rsa.PublicKey, error) {
 	}
 
 	return key.(*rsa.PublicKey), nil
+}
+
+func loadESDSAPublicKey(keyData []byte) (*ecdsa.PublicKey, error) {
+	blockPub, _ := pem.Decode(keyData)
+	x509EncodedPub := blockPub.Bytes
+	genericPublicKey, _ := x509.ParsePKIXPublicKey(x509EncodedPub)
+	publicKey := genericPublicKey.(*ecdsa.PublicKey)
+
+	return publicKey, nil
 }
 
 // taken from https://blainsmith.com/articles/signing-jwts-with-gos-crypto-ed25519/
@@ -890,6 +1059,32 @@ MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCFENGw33yGihy92pDjZQhl0C3
 6rPJj+CvfSC8+q28hxA161QFNUd13wuCTUcq0Qd2qsBe/2hFyc2DCJJg0h1L78+6
 Z4UMR7EOcpfdUE9Hf3m/hs+FUR45uBJeDK1HSFHD8bHKD6kv8FPGfJTotc+2xjJw
 oYi+1hqp1fIekaxsyQIDAQAB
+-----END PUBLIC KEY-----`
+
+//ec
+//const testSpecPrivateKeyPEM = `-----BEGIN EC PRIVATE KEY-----
+//MHQCAQEEICHsQK5JanoX3RhNWxxGb4EmKCroKbmXmTwxLls0hPAvoAcGBSuBBAAK
+//oUQDQgAEfA0yDUdRsNMaiDhcAzjoMgRH9J2WKzjjfhP88t7kmRribYeWMCjlECf3
+//5sH18AdokF1wlcPqfnUYOSgKFob1cw==
+//-----END EC PRIVATE KEY-----`
+//
+//
+//const testSpecPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+//MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEfA0yDUdRsNMaiDhcAzjoMgRH9J2WKzjj
+//fhP88t7kmRribYeWMCjlECf35sH18AdokF1wlcPqfnUYOSgKFob1cw==
+//-----END PUBLIC KEY-----`
+
+
+const testSpecECDSAPrivateKeyPEM =`-----BEGIN PRIVATE KEY-----
+MIGkAgEBBDChXL1u6/hoS18AK1eTWFeAJArivFlFlJfjIx9+C4Xh380OyijCSSsk
+1xTCcYdFcdSgBwYFK4EEACKhZANiAARpQHYGY8Kl3jvIe+YyghuVnXebENpd9dkk
+qNaRVxgLvz1WqYrvREhPX7daCVcK65B7KaL1ENmm6ctAcyD2CMSVdtA1SjVq6Bo4
+piACy7P51DSZKKB5w3KrPPI1auNf/VA=
+-----END PRIVATE KEY-----`
+const testSpecECDSAPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEaUB2BmPCpd47yHvmMoIblZ13mxDaXfXZ
+JKjWkVcYC789VqmK70RIT1+3WglXCuuQeymi9RDZpunLQHMg9gjElXbQNUo1auga
+OKYgAsuz+dQ0mSigecNyqzzyNWrjX/1Q
 -----END PUBLIC KEY-----`
 
 const testEd25519PrivateKeyPEM = `-----BEGIN PRIVATE KEY-----
